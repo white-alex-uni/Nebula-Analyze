@@ -130,3 +130,93 @@ def _huang_channel_vector(quantized_channel: np.ndarray, kernel_size: int, bins:
         output[:, x] = medians
 
     return output
+
+def clahe_channel_1d(L: np.ndarray, grid_size: tuple[int, int] = (8, 8), clip_limit: float = 2.5, n_bins: int = 1024):
+    """
+    Векторизований CLAHE для одноканального масиву L [0.0, 1.0].
+    Використовує 1024 біни для збереження плавних градієнтів туманності.
+    """
+    orig_h, orig_w = L.shape
+    grid_h, grid_w = grid_size
+
+    # Доповнення (Symmetric Padding), щоб розміри ділилися на розмір сітки
+    pad_h = (grid_h - (orig_h % grid_h)) % grid_h
+    pad_w = (grid_w - (orig_w % grid_w)) % grid_w
+    L_pad = np.pad(L, ((0, pad_h), (0, pad_w)), mode='reflect')
+
+    H, W = L_pad.shape
+    tile_h, tile_w = H // grid_h, W // grid_w
+
+    # Квантування L [0, 1] в індекси бінів [0, n_bins - 1]
+    bins = np.clip((L_pad * (n_bins - 1)).astype(np.int32), 0, n_bins - 1)
+
+    # Розбиття на блоки через reshape + swapaxes
+    tiles = bins.reshape(grid_h, tile_h, grid_w, tile_w).swapaxes(1, 2)
+    luts = _compute_tile_luts(tiles, n_bins, clip_limit)
+
+    # Векторизована білінійна інтерполяція між центрами тайлів
+    y_coords = np.arange(H, dtype=np.float32)
+    x_coords = np.arange(W, dtype=np.float32)
+
+    # Координати відносно центрів тайлів
+    ty = (y_coords + 0.5) / tile_h - 0.5
+    tx = (x_coords + 0.5) / tile_w - 0.5
+
+    r0 = np.clip(np.floor(ty).astype(np.int32), 0, grid_h - 1)
+    r1 = np.clip(r0 + 1, 0, grid_h - 1)
+    c0 = np.clip(np.floor(tx).astype(np.int32), 0, grid_w - 1)
+    c1 = np.clip(c0 + 1, 0, grid_w - 1)
+
+    # Вагові коефіцієнти інтерполяції
+    wy = np.clip(ty - r0, 0.0, 1.0)[:, None]  # shape (H, 1)
+    wx = np.clip(tx - c0, 0.0, 1.0)[None, :]  # shape (1, W)
+
+    # Розширення індексів для 2D-вибірки з масиву luts
+    r0_2d, r1_2d = r0[:, None], r1[:, None]
+    c0_2d, c1_2d = c0[None, :], c1[None, :]
+
+    # Вибірка значень яскравості з 4 сусідніх тайлів для кожного пікселя
+    val_tl = luts[r0_2d, c0_2d, bins]  # Top-Left
+    val_tr = luts[r0_2d, c1_2d, bins]  # Top-Right
+    val_bl = luts[r1_2d, c0_2d, bins]  # Bottom-Left
+    val_br = luts[r1_2d, c1_2d, bins]  # Bottom-Right
+
+    # Білінійне змішування
+    top = (1.0 - wx) * val_tl + wx * val_tr
+    bottom = (1.0 - wx) * val_bl + wx * val_br
+    L_out = (1.0 - wy) * top + wy * bottom
+
+    # Повертаємо вихідний розмір без padding
+    return L_out[:orig_h, :orig_w]
+
+def _compute_tile_luts(tiles: np.ndarray, n_bins: int, clip_limit: float) -> np.ndarray:
+    """
+    Обчислює таблиці перекодування (CDF LUT) для кожного тайлу з обрізанням контрасту.
+    """
+    grid_h, grid_w, tile_h, tile_w = tiles.shape
+    n_pixels = tile_h * tile_w
+
+    # Абсолютний поріг обрізання у пікселях
+    max_count = max(1, int(clip_limit * (n_pixels / n_bins)))
+    luts = np.zeros((grid_h, grid_w, n_bins), dtype=np.float32)
+
+    for r in range(grid_h):
+        for c in range(grid_w):
+            hist = np.bincount(tiles[r, c].ravel(), minlength=n_bins).astype(np.float32)
+
+            # Обрізання піків (Clip Limit) та рівномірний перерозподіл надлишку
+            excess = np.maximum(hist - max_count, 0.0)
+            total_excess = np.sum(excess)
+            hist = np.minimum(hist, max_count)
+            hist += total_excess / n_bins
+
+            # Кумулятивна функція розподілу (CDF), нормалізована у [0.0, 1.0]
+            cdf = np.cumsum(hist)
+            cdf_min = cdf[0]
+            denom = n_pixels - cdf_min
+            if denom > 1e-6:
+                luts[r, c] = (cdf - cdf_min) / denom
+            else:
+                luts[r, c] = np.linspace(0.0, 1.0, n_bins)
+
+    return np.clip(luts, 0.0, 1.0)
