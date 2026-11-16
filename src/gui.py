@@ -324,7 +324,7 @@ class SpaceAnalyzeApp:
         self._redraw_canvases()
 
         last_times = list(timer.last_durations.values())
-        time_info = f" (останній кадр: {last_times[-1]:.3f} с)" if last_times else ""
+        time_info = f" (час обробки: {last_times[-1]:.3f} с)" if last_times else ""
         self.status_var.set(
             f"Готово! Алгоритм '{algo_name}': збережено {saved_count}/{total} у папку '{self.output_dir}'{time_info}."
         )
