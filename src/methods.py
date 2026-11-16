@@ -404,3 +404,63 @@ def otsu_thresholding(img: np.ndarray, n_bins: int = 256) -> np.ndarray:
     gray = _to_grayscale_float(img)
     threshold = compute_otsu_threshold(gray, n_bins=n_bins)
     return np.where(gray > threshold, 255, 0).astype(np.uint8)
+
+def _build_structuring_element(kernel_size: int, shape: str = "rect") -> np.ndarray:
+    """Формує бінарний структуруючий елемент ('rect', 'cross', 'disk') розміром kernel_size x kernel_size."""
+    if kernel_size % 2 == 0 or kernel_size < 3:
+        raise ValueError("Kernel size must be odd number >= 3")
+
+    radius = kernel_size // 2
+    shape_norm = shape.lower()
+    if shape_norm == "rect":
+        return np.ones((kernel_size, kernel_size), dtype=bool)
+    if shape_norm == "cross":
+        se = np.zeros((kernel_size, kernel_size), dtype=bool)
+        se[radius, :] = True
+        se[:, radius] = True
+        return se
+    if shape_norm == "disk":
+        y, x = np.ogrid[-radius: radius + 1, -radius: radius + 1]
+        return (x * x + y * y) <= (radius * radius)
+    raise ValueError(f"Unknown structuring element shape: {shape}")
+
+
+def erosion_filter(
+    img: np.ndarray,
+    kernel_size: int = 3,
+    shape: str = "rect",
+    iterations: int = 1,
+) -> np.ndarray:
+    """
+    Морфологічна ерозія на базі NumPy (мінімум у межах структуруючого елемента).
+    Підтримує як 2D (відтінки сірого / бінарні), так і 3D (поканальні) масиви.
+    """
+    if kernel_size % 2 == 0 or kernel_size < 3:
+        raise ValueError("Kernel size must be odd number >= 3")
+    if iterations < 1:
+        raise ValueError("Iterations must be >= 1")
+
+    radius = kernel_size // 2
+    se = _build_structuring_element(kernel_size, shape=shape)
+    is_rect = shape.lower() == "rect"
+
+    result = np.asarray(img).copy()
+    is_2d = result.ndim == 2
+    if is_2d:
+        result = result[:, :, None]
+
+    for _ in range(iterations):
+        if is_rect:
+            # Сепарабельний мінімум по рядках і стовпцях для прямокутного ядра
+            pad_h = np.pad(result, ((0, 0), (radius, radius), (0, 0)), mode="edge")
+            eroded_h = np.min(sliding_window_view(pad_h, kernel_size, axis=1), axis=-1)
+
+            pad_v = np.pad(eroded_h, ((radius, radius), (0, 0), (0, 0)), mode="edge")
+            result = np.min(sliding_window_view(pad_v, kernel_size, axis=0), axis=-1)
+        else:
+            padded = np.pad(result, ((radius, radius), (radius, radius), (0, 0)), mode="edge")
+            windows = sliding_window_view(padded, (kernel_size, kernel_size), axis=(0, 1))
+            # windows має форму (H, W, C, kernel_size, kernel_size)
+            result = np.min(windows[:, :, :, se], axis=-1)
+
+    return result[:, :, 0] if is_2d else result

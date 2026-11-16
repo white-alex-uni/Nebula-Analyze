@@ -9,6 +9,7 @@ from src.methods import (
     clahe_channel_1d,
     canny_edge_detection,
     otsu_thresholding,
+    erosion_filter,
 )
 from src.color_spaces import oklab_2_rgb, rgb_2_oklab
 
@@ -126,6 +127,19 @@ def run_otsu(input_img: Image.Image | np.ndarray) -> Image.Image:
 
     return rgb_2_image(binary_arr)
 
+def run_erosion(input_img: Image.Image | np.ndarray) -> Image.Image:
+    """
+    Запускає морфологічну обробку — ерозію (вікно 3x3).
+    Повертає Image.Image ('RGB').
+    """
+    rgb_arr = _ensure_rgb_array(input_img)
+
+    timer.start(thread="erosion")
+    eroded_arr = erosion_filter(rgb_arr, kernel_size=3, shape="rect", iterations=1)
+    timer.stop(thread="erosion")
+
+    return rgb_2_image(eroded_arr)
+
 
 ALGORITHMS: dict[str, tuple[callable, str]] = {
     "Адаптивне гістограмне вирівнювання (CLAHE)": (run_clahe, "_clahe"),
@@ -133,4 +147,5 @@ ALGORITHMS: dict[str, tuple[callable, str]] = {
     "Базовий медіанний фільтр": (run_basic_median, "_basic_median"),
     "Метод Кенні (виділення контурів)": (run_canny, "_canny"),
     "Метод Оцу (порогова сегментація)": (run_otsu, "_otsu"),
+    "Ерозія (морфологія)": (run_erosion, "_erosion"),
 }
