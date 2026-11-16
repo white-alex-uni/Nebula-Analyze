@@ -11,6 +11,7 @@ from src.proceed import (
     load_images_from_folder,
     save_image,
 )
+from src.metrics import compute_image_metrics, save_image_metrics_json
 from src.run import ALGORITHMS, ALGORITHM_PARAMS, timer
 
 
@@ -611,10 +612,21 @@ class SpaceAnalyzeApp:
                     output_path=self.output_dir,
                     suffix=suffix,
                 )
+                metrics_dict = compute_image_metrics(orig_img, result_img)
+                save_image_metrics_json(
+                    original_path=orig_path,
+                    saved_image_path=saved_path,
+                    algorithm_name=algo_name,
+                    parameters=params,
+                    processing_time_sec=elapsed_sec,
+                    metrics=metrics_dict,
+                    output_dir=self.output_dir,
+                )
                 self.processed_items[idx] = {
                     "img": result_img,
                     "saved_path": saved_path,
                     "time": elapsed_sec,
+                    "metrics": metrics_dict,
                 }
                 if saved_path is not None:
                     saved_count += 1
