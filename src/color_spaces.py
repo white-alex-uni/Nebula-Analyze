@@ -39,12 +39,18 @@ SRGB_TO_XYZ = np.array([
 
 def rgb_2_oklab(rgb_input: np.ndarray) -> np.ndarray:
     """
-    Перетворює масив пікселів RGB розміром [N, 3] у масив Oklab розміром [N, 3].
-    Виконує гамма-декодування без використання skimage.
+    Перетворює масив пікселів RGB розміром [..., 3] у масив Oklab розміром [..., 3].
+    Виконує гамма-декодування без використання сторонніх бібліотек.
     """
-    # Standardize input to a floating-point NumPy array
-    srgb_norm = np.array(rgb_input, dtype=np.float32)
-    if np.any(srgb_norm > 1.0): srgb_norm /= 255.0
+    input_arr = np.asarray(rgb_input)
+    srgb_norm = input_arr.astype(np.float32)
+
+    # Перевірка типу даних: цілочисельні масиви (напр. uint8) завжди нормалізуємо у [0.0, 1.0],
+    # навіть якщо всі пікселі дуже темні (<= 1).
+    if np.issubdtype(input_arr.dtype, np.integer) or np.any(srgb_norm > 1.0):
+        srgb_norm = srgb_norm / 255.0
+
+    srgb_norm = np.clip(srgb_norm, 0.0, 1.0)
 
     # Gamma linearization sRGB
     linear = np.where(
@@ -58,22 +64,21 @@ def rgb_2_oklab(rgb_input: np.ndarray) -> np.ndarray:
     xyz = linear @ SRGB_TO_XYZ.T
 
     # Transform XYZ to LMS (Large, Medium, Small) Cone Response Space
-    # Perform matrix multiplication across the last axis
     lms = xyz @ M1.T
 
     # Apply cube root compression
-    # Using np.cbrt handles negative values safely if any out-of-gamut data occurs
     lms_compressed = np.cbrt(lms)
 
     # Transform compressed LMS space to final Lab channels
     oklab = lms_compressed @ M2.T
-    return oklab
+    return oklab.astype(np.float32)
 
-def oklab_2_rgb(oklab_input: np.ndarray | tuple | list, is_float:bool = False) -> np.ndarray:
+def oklab_2_rgb(oklab_input: np.ndarray | tuple | list, is_float: bool = False) -> np.ndarray:
     """
-    Перетворює значення OkLab у колірний простір RGB.
+    Перетворює значення Oklab у колірний простір sRGB.
+    Якщо is_float=True, повертає float32 у діапазоні [0.0, 1.0], інакше uint8 [0, 255].
     """
-    oklab_arr = np.array(oklab_input, dtype=np.float32)
+    oklab_arr = np.asarray(oklab_input, dtype=np.float32)
 
     # Oklab back to LMS
     lms_compressed = oklab_arr @ M2_inv.T
@@ -84,10 +89,20 @@ def oklab_2_rgb(oklab_input: np.ndarray | tuple | list, is_float:bool = False) -
     # LMS back to Linear RGB
     linear = lms @ M1_inv.T
 
+    # Запобігаємо NaN при піднесенні від'ємних значень (out-of-gamut) до дробового степеня 1/2.4
+    linear_clipped = np.clip(linear, 0.0, 1.0)
+
     # Re-apply Gamma Curve (Gamma encoding)
-    srgb_gamma = np.where(linear <= 0.0031308, linear * 12.92, 1.055 * (linear ** (1.0/2.4)) - 0.055)
+    srgb_gamma = np.where(
+        linear_clipped <= 0.0031308,
+        linear_clipped * 12.92,
+        1.055 * (np.maximum(linear_clipped, 0.0031308) ** (1.0 / 2.4)) - 0.055
+    )
 
     # Clip out-of-gamut values safely to 0-1
-    srgb_float = np.clip(srgb_gamma, 0, 1).astype(np.float32)
+    srgb_float = np.clip(srgb_gamma, 0.0, 1.0).astype(np.float32)
 
-    return (srgb_float * 255.0).round().astype(np.uint8)
+    if is_float:
+        return srgb_float
+
+    return np.rint(srgb_float * 255.0).astype(np.uint8)
