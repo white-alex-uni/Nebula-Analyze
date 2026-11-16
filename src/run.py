@@ -10,6 +10,7 @@ from src.methods import (
     canny_edge_detection,
     otsu_thresholding,
     erosion_filter,
+    wavelet_transform,
 )
 from src.color_spaces import oklab_2_rgb, rgb_2_oklab
 
@@ -140,6 +141,20 @@ def run_erosion(input_img: Image.Image | np.ndarray) -> Image.Image:
 
     return rgb_2_image(eroded_arr)
 
+def run_wavelet(input_img: Image.Image | np.ndarray) -> Image.Image:
+    """
+    Запускає 2D перетворення Вейвлета (багаторівневий DWT розклад Хаара).
+    Контракт: приймає Image.Image (або ndarray) -> повертає Image.Image ('RGB').
+    """
+    rgb_arr = _ensure_rgb_array(input_img)
+    gray_arr = rgb_2_gray(rgb_arr)
+
+    timer.start(thread="wavelet")
+    wavelet_arr = wavelet_transform(gray_arr, levels=2, mode="decompose")
+    timer.stop(thread="wavelet")
+
+    return rgb_2_image(wavelet_arr)
+
 
 ALGORITHMS: dict[str, tuple[callable, str]] = {
     "Адаптивне гістограмне вирівнювання (CLAHE)": (run_clahe, "_clahe"),
@@ -148,4 +163,5 @@ ALGORITHMS: dict[str, tuple[callable, str]] = {
     "Метод Кенні (виділення контурів)": (run_canny, "_canny"),
     "Метод Оцу (порогова сегментація)": (run_otsu, "_otsu"),
     "Ерозія (морфологія)": (run_erosion, "_erosion"),
+    "Перетворення Вейвлета": (run_wavelet, "_wavelet"),
 }

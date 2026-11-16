@@ -464,3 +464,171 @@ def erosion_filter(
             result = np.min(windows[:, :, :, se], axis=-1)
 
     return result[:, :, 0] if is_2d else result
+
+
+def dwt2_haar(channel: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Однорівневе 2D дискретне вейвлет-перетворення Хаара (DWT).
+    Повертає 4 субсмуги: (LL, LH, HL, HH).
+    """
+    arr = np.asarray(channel, dtype=np.float32)
+    h, w = arr.shape
+    pad_h = h % 2
+    pad_w = w % 2
+    if pad_h or pad_w:
+        arr = np.pad(arr, ((0, pad_h), (0, pad_w)), mode="reflect")
+
+    inv_sqrt2 = np.float32(1.0 / np.sqrt(2.0))
+
+    # Розклад уздовж рядків
+    even_cols = arr[:, 0::2]
+    odd_cols = arr[:, 1::2]
+    l_row = (even_cols + odd_cols) * inv_sqrt2
+    h_row = (even_cols - odd_cols) * inv_sqrt2
+
+    # Розклад уздовж стовпців
+    ll = (l_row[0::2, :] + l_row[1::2, :]) * inv_sqrt2
+    lh = (l_row[0::2, :] - l_row[1::2, :]) * inv_sqrt2
+    hl = (h_row[0::2, :] + h_row[1::2, :]) * inv_sqrt2
+    hh = (h_row[0::2, :] - h_row[1::2, :]) * inv_sqrt2
+
+    return ll, lh, hl, hh
+
+
+def inversed_dwt2_haar(
+    ll: np.ndarray,
+    lh: np.ndarray,
+    hl: np.ndarray,
+    hh: np.ndarray,
+    target_shape: tuple[int, int] | None = None,
+) -> np.ndarray:
+    """
+    Однорівневе обернене 2D дискретне вейвлет-перетворення Хаара (IDWT).
+    """
+    sub_h, sub_w = ll.shape
+    inv_sqrt2 = np.float32(1.0 / np.sqrt(2.0))
+
+    l_row = np.empty((sub_h * 2, sub_w), dtype=np.float32)
+    h_row = np.empty((sub_h * 2, sub_w), dtype=np.float32)
+
+    l_row[0::2, :] = (ll + lh) * inv_sqrt2
+    l_row[1::2, :] = (ll - lh) * inv_sqrt2
+
+    h_row[0::2, :] = (hl + hh) * inv_sqrt2
+    h_row[1::2, :] = (hl - hh) * inv_sqrt2
+
+    out = np.empty((sub_h * 2, sub_w * 2), dtype=np.float32)
+    out[:, 0::2] = (l_row + h_row) * inv_sqrt2
+    out[:, 1::2] = (l_row - h_row) * inv_sqrt2
+
+    if target_shape is not None:
+        out = out[:target_shape[0], :target_shape[1]]
+    return out
+
+
+def _normalize_subband_for_display(subband: np.ndarray, is_detail: bool = True) -> np.ndarray:
+    """Нормалізує вейвлет-субсмугу у діапазон [0.0, 255.0] для наочної візуалізації."""
+    if is_detail:
+        mag = np.abs(subband)
+        p99 = float(np.percentile(mag, 99.0)) if mag.size > 0 else 1.0
+        scale = p99 if p99 > 1e-6 else float(np.max(mag))
+        if scale <= 1e-6:
+            return np.zeros_like(mag, dtype=np.float32)
+        return np.clip((mag / scale) * 255.0, 0.0, 255.0).astype(np.float32)
+
+    s_min = float(np.min(subband))
+    s_max = float(np.max(subband))
+    if s_max - s_min <= 1e-6:
+        return np.zeros_like(subband, dtype=np.float32)
+    return ((subband - s_min) / (s_max - s_min) * 255.0).astype(np.float32)
+
+
+def wavelet_transform(
+    img: np.ndarray,
+    levels: int = 2,
+    mode: str = "decompose",
+    threshold_scale: float = 1.0,
+) -> np.ndarray:
+    """
+    Багаторівневе 2D вейвлет-перетворення Хаара на NumPy.
+    Параметри:
+      - levels: кількість рівнів розкладу (>= 1).
+      - mode:
+          'decompose' — будує 2D частотно-просторову карту субсмуг (LL, HL, LH, HH);
+          'denoise'   — виконує DWT, м'яке порогування високочастотних коефіцієнтів (VisuShrink) та IDWT.
+    """
+    if levels < 1:
+        raise ValueError("levels must be >= 1")
+
+    mode_norm = mode.lower()
+    if mode_norm == "decompose":
+        gray = _to_grayscale_float(img)
+        orig_h, orig_w = gray.shape
+
+        def _build_mosaic(current: np.ndarray, lvl: int) -> np.ndarray:
+            if lvl <= 0 or min(current.shape) < 4:
+                return _normalize_subband_for_display(current, is_detail=False)
+            ll, lh, hl, hh = dwt2_haar(current)
+            top_left = _build_mosaic(ll, lvl - 1)
+            top_right = _normalize_subband_for_display(hl, is_detail=True)
+            bot_left = _normalize_subband_for_display(lh, is_detail=True)
+            bot_right = _normalize_subband_for_display(hh, is_detail=True)
+
+            # Вирівнюємо розміри квадрантів, якщо вкладений рівень мав непарну розмірність
+            th, tw = top_right.shape
+            top_left = top_left[:th, :tw]
+
+            top = np.concatenate([top_left, top_right], axis=1)
+            bottom = np.concatenate([bot_left, bot_right], axis=1)
+            mosaic = np.concatenate([top, bottom], axis=0)
+            # Додаємо тонку роздільну лінію між квадрантами для наочності
+            mosaic[th - 1: th + 1, :] = 180.0
+            mosaic[:, tw - 1: tw + 1] = 180.0
+            return mosaic
+
+        mosaic_out = _build_mosaic(gray, levels)[:orig_h, :orig_w]
+        return np.clip(np.rint(mosaic_out), 0, 255).astype(np.uint8)
+
+    if mode_norm == "denoise":
+        arr = np.asarray(img, dtype=np.float32)
+        is_2d = arr.ndim == 2
+        if is_2d:
+            arr = arr[:, :, None]
+
+        out_channels = []
+        for c in range(arr.shape[2]):
+            ch = arr[:, :, c]
+            decomp_stack = []
+            curr = ch
+            for _ in range(levels):
+                if min(curr.shape) < 2:
+                    break
+                orig_shape = curr.shape
+                ll, lh, hl, hh = dwt2_haar(curr)
+                decomp_stack.append((lh, hl, hh, orig_shape))
+                curr = ll
+
+            if decomp_stack:
+                # Оцінка рівня шуму за медіаною абсолютного відхилення (MAD) на першому рівні HH
+                hh1 = decomp_stack[0][2]
+                sigma_est = float(np.median(np.abs(hh1))) / 0.6745
+                n_pixels = max(ch.size, 2)
+                univ_thresh = threshold_scale * sigma_est * np.sqrt(2.0 * np.log(n_pixels))
+
+                for idx in range(len(decomp_stack) - 1, -1, -1):
+                    lh, hl, hh, orig_shape = decomp_stack[idx]
+                    lh_t = np.sign(lh) * np.maximum(np.abs(lh) - univ_thresh, 0.0)
+                    hl_t = np.sign(hl) * np.maximum(np.abs(hl) - univ_thresh, 0.0)
+                    hh_t = np.sign(hh) * np.maximum(np.abs(hh) - univ_thresh, 0.0)
+                    curr = inversed_dwt2_haar(curr, lh_t, hl_t, hh_t, target_shape=orig_shape)
+
+            out_channels.append(curr)
+
+        reconstructed = np.stack(out_channels, axis=-1)
+        if is_2d:
+            reconstructed = reconstructed[:, :, 0]
+        if np.issubdtype(np.asarray(img).dtype, np.integer):
+            return np.clip(np.rint(reconstructed), 0, 255).astype(np.uint8)
+        return reconstructed.astype(np.float32)
+
+    raise ValueError(f"Unknown wavelet mode: {mode}. Expected 'decompose' or 'denoise'.")
