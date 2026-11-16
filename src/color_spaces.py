@@ -90,7 +90,4 @@ def oklab_2_rgb(oklab_input: np.ndarray | tuple | list, is_float:bool = False) -
     # Clip out-of-gamut values safely to 0-1
     srgb_float = np.clip(srgb_gamma, 0, 1).astype(np.float32)
 
-    if not is_float:
-        # then scale to 0-255
-        return (srgb_float * 255.0).round().astype(np.uint8)
-    return srgb_float
+    return (srgb_float * 255.0).round().astype(np.uint8)
