@@ -234,3 +234,123 @@ def _compute_tile_luts(tiles: np.ndarray, n_bins: int, clip_limit: float) -> np.
                 luts[r, c] = np.linspace(0.0, 1.0, n_bins, dtype=np.float32)
 
     return np.clip(luts, 0.0, 1.0)
+
+
+def _to_grayscale_float(img: np.ndarray) -> np.ndarray:
+    """Приводить вхідний 2D або 3D масив до 2D float32 у діапазоні [0.0, 255.0]."""
+    arr = np.asarray(img, dtype=np.float32)
+    if not np.issubdtype(np.asarray(img).dtype, np.integer) and np.max(arr) <= 1.0:
+        arr = arr * 255.0
+    if arr.ndim == 3:
+        arr = 0.299 * arr[:, :, 0] + 0.587 * arr[:, :, 1] + 0.114 * arr[:, :, 2]
+    return np.clip(arr, 0.0, 255.0).astype(np.float32)
+
+
+def _gaussian_blur_2d(gray: np.ndarray, kernel_size: int = 5, sigma: float = 1.4) -> np.ndarray:
+    """Сепарабельне 2D гаусове згладжування за допомогою sliding_window_view."""
+    if kernel_size % 2 == 0 or kernel_size < 3:
+        raise ValueError("Kernel size must be odd number >= 3")
+
+    radius = kernel_size // 2
+    sigma_val = max(float(sigma), 1e-3)
+    x = np.arange(-radius, radius + 1, dtype=np.float32)
+    kernel_1d = np.exp(-0.5 * (x / sigma_val) ** 2)
+    kernel_1d /= np.sum(kernel_1d)
+
+    # Згортка по горизонталі, потім по вертикалі
+    pad_h = np.pad(gray, ((0, 0), (radius, radius)), mode="reflect")
+    blurred_h = sliding_window_view(pad_h, kernel_size, axis=1) @ kernel_1d
+
+    pad_v = np.pad(blurred_h, ((radius, radius), (0, 0)), mode="reflect")
+    blurred = sliding_window_view(pad_v, kernel_size, axis=0) @ kernel_1d
+    return blurred.astype(np.float32)
+
+
+def _sobel_gradients(smoothed: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Обчислює магнітуду та кут градієнта [0, 180) за допомогою сепарабельного оператора Собеля."""
+    s_smooth = np.array([1.0, 2.0, 1.0], dtype=np.float32)
+    s_diff = np.array([-1.0, 0.0, 1.0], dtype=np.float32)
+
+    padded = np.pad(smoothed, ((1, 1), (1, 1)), mode="reflect")
+
+    # Gx: згладжування по вертикалі, похідна по горизонталі
+    gx_v = sliding_window_view(padded, 3, axis=0) @ s_smooth
+    gx = sliding_window_view(gx_v, 3, axis=1) @ s_diff
+
+    # Gy: похідна по вертикалі, згладжування по горизонталі
+    gy_v = sliding_window_view(padded, 3, axis=0) @ s_diff
+    gy = sliding_window_view(gy_v, 3, axis=1) @ s_smooth
+
+    magnitude = np.hypot(gx, gy).astype(np.float32)
+    angle = (np.rad2deg(np.arctan2(gy, gx)) % 180.0).astype(np.float32)
+    return magnitude, angle
+
+
+def canny_edge_detection(
+    img: np.ndarray,
+    sigma: float = 1.4,
+    kernel_size: int = 5,
+    low_threshold: float = 0.08,
+    high_threshold: float = 0.20,
+) -> np.ndarray:
+    """
+    Виділення контурів методом Кенні (Canny Edge Detection)
+    1. Сепарабельний фільтр Гаусса.
+    2. Оператор Собеля (магнітуда та напрямок градієнта).
+    3. Векторизоване придушення немаксимумів (Non-Maximum Suppression).
+    4. Подвійне порогування та трасування контурів гістерезисом.
+    Повертає 2D масив uint8 зі значеннями 0 або 255.
+    """
+    gray = _to_grayscale_float(img)
+    smoothed = _gaussian_blur_2d(gray, kernel_size=kernel_size, sigma=sigma)
+    mag, angle = _sobel_gradients(smoothed)
+
+    # Придушення немаксимумів (Non-Maximum Suppression) без циклів по пікселях
+    mag_pad = np.pad(mag, 1, mode="constant", constant_values=0.0)
+
+    east = mag_pad[1:-1, 2:]
+    west = mag_pad[1:-1, :-2]
+    south = mag_pad[2:, 1:-1]
+    north = mag_pad[:-2, 1:-1]
+    se = mag_pad[2:, 2:]
+    nw = mag_pad[:-2, :-2]
+    ne = mag_pad[:-2, 2:]
+    sw = mag_pad[2:, :-2]
+
+    dir_0 = (angle < 22.5) | (angle >= 157.5)
+    dir_45 = (angle >= 22.5) & (angle < 67.5)
+    dir_90 = (angle >= 67.5) & (angle < 112.5)
+    dir_135 = (angle >= 112.5) & (angle < 157.5)
+
+    n1 = np.select([dir_0, dir_45, dir_90, dir_135], [east, se, south, ne], default=0.0)
+    n2 = np.select([dir_0, dir_45, dir_90, dir_135], [west, nw, north, sw], default=0.0)
+
+    nms = np.where((mag >= n1) & (mag >= n2), mag, 0.0)
+
+    max_mag = float(np.max(nms))
+    if max_mag <= 1e-6:
+        return np.zeros_like(gray, dtype=np.uint8)
+
+    high_val = max_mag * high_threshold if high_threshold <= 1.0 else float(high_threshold)
+    low_val = max_mag * low_threshold if low_threshold <= 1.0 else float(low_threshold)
+    if low_val > high_val:
+        low_val, high_val = high_val, low_val
+
+    strong = nms >= high_val
+    weak = (nms >= low_val) & (~strong)
+
+    # Трасування контурів гістерезисом через векторизоване 8-сусіднє розширення
+    edges = strong.copy()
+    while True:
+        p = np.pad(edges, 1, mode="constant", constant_values=False)
+        dilated = (
+            p[:-2, :-2] | p[:-2, 1:-1] | p[:-2, 2:]
+            | p[1:-1, :-2] | p[1:-1, 1:-1] | p[1:-1, 2:]
+            | p[2:, :-2] | p[2:, 1:-1] | p[2:, 2:]
+        )
+        next_edges = edges | (dilated & weak)
+        if np.array_equal(next_edges, edges):
+            break
+        edges = next_edges
+
+    return (edges.astype(np.uint8) * 255)

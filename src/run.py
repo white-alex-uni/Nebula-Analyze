@@ -3,7 +3,12 @@ import numpy as np
 from PIL import Image
 
 from src.proceed import image_2_rgb, rgb_2_image, rgb_2_gray
-from src.methods import median_filter, huang_median_filter_oklab, clahe_channel_1d
+from src.methods import (
+    median_filter,
+    huang_median_filter_oklab,
+    clahe_channel_1d,
+    canny_edge_detection,
+)
 from src.color_spaces import oklab_2_rgb, rgb_2_oklab
 
 
@@ -92,8 +97,24 @@ def run_clahe(input_img: Image.Image | np.ndarray) -> Image.Image:
     return rgb_2_image(filtered_rgb)
 
 
+def run_canny(input_img: Image.Image | np.ndarray) -> Image.Image:
+    """
+    Запускає виділення контурів методом Кенні.
+    Повертає Image.Image ('RGB').
+    """
+    rgb_arr = _ensure_rgb_array(input_img)
+    gray_arr = rgb_2_gray(rgb_arr)
+
+    timer.start(thread="canny")
+    edges_arr = canny_edge_detection(gray_arr)
+    timer.stop(thread="canny")
+
+    return rgb_2_image(edges_arr)
+
+
 ALGORITHMS: dict[str, tuple[callable, str]] = {
     "Адаптивне гістограмне вирівнювання (CLAHE)": (run_clahe, "_clahe"),
     "Медіанний фільтр (алгоритм Хуанга)": (run_huang_median_filter, "_huang_median"),
     "Базовий медіанний фільтр": (run_basic_median, "_basic_median"),
+    "Метод Кенні (виділення контурів)": (run_canny, "_canny"),
 }
