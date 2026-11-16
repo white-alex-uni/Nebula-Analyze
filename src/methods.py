@@ -147,8 +147,9 @@ def clahe_channel_1d(L: np.ndarray, grid_size: tuple[int, int] = (8, 8), clip_li
     H, W = L_pad.shape
     tile_h, tile_w = H // grid_h, W // grid_w
 
-    # Квантування L [0, 1] в індекси бінів [0, n_bins - 1]
-    bins = np.clip((L_pad * (n_bins - 1)).astype(np.int32), 0, n_bins - 1)
+    # Квантування L [0, 1] в індекси бінів [0, n_bins - 1] із коректним округленням
+    L_pad_clipped = np.clip(L_pad, 0.0, 1.0)
+    bins = np.clip(np.rint(L_pad_clipped * (n_bins - 1)).astype(np.int32), 0, n_bins - 1)
 
     # Розбиття на блоки через reshape + swapaxes
     tiles = bins.reshape(grid_h, tile_h, grid_w, tile_w).swapaxes(1, 2)
@@ -187,36 +188,49 @@ def clahe_channel_1d(L: np.ndarray, grid_size: tuple[int, int] = (8, 8), clip_li
     L_out = (1.0 - wy) * top + wy * bottom
 
     # Повертаємо вихідний розмір без padding
-    return L_out[:orig_h, :orig_w]
+    return np.clip(L_out[:orig_h, :orig_w], 0.0, 1.0)
 
 def _compute_tile_luts(tiles: np.ndarray, n_bins: int, clip_limit: float) -> np.ndarray:
     """
-    Обчислює таблиці перекодування (CDF LUT) для кожного тайлу з обрізанням контрасту.
+    Обчислює таблиці перекодування (CDF LUT) для кожного тайлу з ітеративним обрізанням контрасту,
+    гарантуючи, що жоден бін після перерозподілу не перевищує max_count.
     """
     grid_h, grid_w, tile_h, tile_w = tiles.shape
     n_pixels = tile_h * tile_w
 
-    # Абсолютний поріг обрізання у пікселях
-    max_count = max(1, int(clip_limit * (n_pixels / n_bins)))
+    # Абсолютний поріг обрізання у пікселях (мінімум середнє заповнення біна)
+    effective_clip = max(1.0, float(clip_limit))
+    max_count = max(1.0, effective_clip * (n_pixels / n_bins))
     luts = np.zeros((grid_h, grid_w, n_bins), dtype=np.float32)
 
     for r in range(grid_h):
         for c in range(grid_w):
             hist = np.bincount(tiles[r, c].ravel(), minlength=n_bins).astype(np.float32)
 
-            # Обрізання піків (Clip Limit) та рівномірний перерозподіл надлишку
-            excess = np.maximum(hist - max_count, 0.0)
-            total_excess = np.sum(excess)
+            # Ітеративне обрізання піків (Clip Limit) та перерозподіл надлишку
+            # лише між бінами, які не досягли max_count
+            while True:
+                excess = np.maximum(hist - max_count, 0.0)
+                total_excess = float(np.sum(excess))
+                if total_excess <= 1e-5:
+                    break
+                hist = np.minimum(hist, max_count)
+                below_mask = hist < (max_count - 1e-6)
+                n_below = int(np.count_nonzero(below_mask))
+                if n_below == 0:
+                    break
+                hist[below_mask] += total_excess / n_below
+
             hist = np.minimum(hist, max_count)
-            hist += total_excess / n_bins
 
             # Кумулятивна функція розподілу (CDF), нормалізована у [0.0, 1.0]
             cdf = np.cumsum(hist)
             cdf_min = cdf[0]
-            denom = n_pixels - cdf_min
+            total_sum = cdf[-1]
+            denom = total_sum - cdf_min
             if denom > 1e-6:
                 luts[r, c] = (cdf - cdf_min) / denom
             else:
-                luts[r, c] = np.linspace(0.0, 1.0, n_bins)
+                luts[r, c] = np.linspace(0.0, 1.0, n_bins, dtype=np.float32)
 
     return np.clip(luts, 0.0, 1.0)
