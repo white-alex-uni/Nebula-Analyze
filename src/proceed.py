@@ -36,7 +36,7 @@ def rgb_2_gray(rgb_img: np.ndarray) -> np.ndarray:
     data = np.array(rgb_img, np.float32)
     return 0.299 * data[:, :, 0] + 0.587 * data[:, :, 1] + 0.114 * data[:, :, 2]
 
-def array_2_image(array: np.ndarray):
+def rgb_2_image(array: np.ndarray):
     return Image.fromarray(array.astype(np.uint8))
 
 def save_image(img: Image.Image, original_path: Path, output_path: str, suffix: str, default_format:str=None):
@@ -51,7 +51,7 @@ def save_image(img: Image.Image, original_path: Path, output_path: str, suffix: 
     if default_format:
         img_format = default_format if default_format.startswith('.') else f".{default_format}"
 
-    save_path = os.path.join(dir_name, f"{base_name}_{suffix}{img_format}")
+    save_path = os.path.join(dir_name, f"{base_name}{suffix}{img_format}")
 
     try:
         # Зберігаємо файл
