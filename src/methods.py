@@ -354,3 +354,53 @@ def canny_edge_detection(
         edges = next_edges
 
     return (edges.astype(np.uint8) * 255)
+
+def compute_otsu_threshold(img: np.ndarray, n_bins: int = 256) -> float:
+    """
+    Обчислює оптимальний поріг бінаризації за методом Оцу (максимізація міжкласової дисперсії).
+    Повертає значення порогу в діапазоні [0.0, 255.0].
+    """
+    if n_bins < 2:
+        raise ValueError("n_bins must be >= 2")
+
+    gray = _to_grayscale_float(img)
+    scale = (n_bins - 1) / 255.0
+    quantized = np.clip(np.rint(gray * scale).astype(np.int32), 0, n_bins - 1)
+
+    hist = np.bincount(quantized.ravel(), minlength=n_bins).astype(np.float64)
+    total = float(np.sum(hist))
+    if total <= 0.0:
+        return 127.5
+
+    prob = hist / total
+    bins = np.arange(n_bins, dtype=np.float64)
+
+    omega0 = np.cumsum(prob)
+    omega1 = 1.0 - omega0
+
+    mu = np.cumsum(prob * bins)
+    mu_t = mu[-1]
+
+    denom = omega0 * omega1
+    sigma_b_sq = np.zeros(n_bins, dtype=np.float64)
+    valid = denom > 1e-12
+    sigma_b_sq[valid] = ((mu_t * omega0[valid] - mu[valid]) ** 2) / denom[valid]
+
+    max_var = float(np.max(sigma_b_sq))
+    if max_var <= 0.0:
+        best_bin = (n_bins - 1) / 2.0
+    else:
+        max_indices = np.flatnonzero(np.isclose(sigma_b_sq, max_var, rtol=1e-9))
+        best_bin = float(np.mean(max_indices))
+
+    return float(best_bin / scale)
+
+
+def otsu_thresholding(img: np.ndarray, n_bins: int = 256) -> np.ndarray:
+    """
+    Порогова сегментація зображення за методом Оцу.
+    Повертає бінарну маску uint8 зі значеннями 0 та 255.
+    """
+    gray = _to_grayscale_float(img)
+    threshold = compute_otsu_threshold(gray, n_bins=n_bins)
+    return np.where(gray > threshold, 255, 0).astype(np.uint8)

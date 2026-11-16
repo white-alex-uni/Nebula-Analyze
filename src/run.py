@@ -8,6 +8,7 @@ from src.methods import (
     huang_median_filter_oklab,
     clahe_channel_1d,
     canny_edge_detection,
+    otsu_thresholding,
 )
 from src.color_spaces import oklab_2_rgb, rgb_2_oklab
 
@@ -111,10 +112,25 @@ def run_canny(input_img: Image.Image | np.ndarray) -> Image.Image:
 
     return rgb_2_image(edges_arr)
 
+def run_otsu(input_img: Image.Image | np.ndarray) -> Image.Image:
+    """
+    Запускає порогову сегментацію методом Оцу.
+    Повертає Image.Image ('RGB').
+    """
+    rgb_arr = _ensure_rgb_array(input_img)
+    gray_arr = rgb_2_gray(rgb_arr)
+
+    timer.start(thread="otsu")
+    binary_arr = otsu_thresholding(gray_arr)
+    timer.stop(thread="otsu")
+
+    return rgb_2_image(binary_arr)
+
 
 ALGORITHMS: dict[str, tuple[callable, str]] = {
     "Адаптивне гістограмне вирівнювання (CLAHE)": (run_clahe, "_clahe"),
     "Медіанний фільтр (алгоритм Хуанга)": (run_huang_median_filter, "_huang_median"),
     "Базовий медіанний фільтр": (run_basic_median, "_basic_median"),
     "Метод Кенні (виділення контурів)": (run_canny, "_canny"),
+    "Метод Оцу (порогова сегментація)": (run_otsu, "_otsu"),
 }
